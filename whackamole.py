@@ -43,6 +43,72 @@ MOLE_UP_MAX  = 1.4
 MOLE_RISE    = 0.18
 GAME_DURATION = 60
 
+# ── Fullscreen manager ─────────────────────────────────────────────────────────
+
+class Display:
+    """Wraps the pygame window and handles windowed / fullscreen toggling.
+
+    All game code draws onto a fixed 900×700 canvas (self.canvas).
+    Each frame, canvas is scaled to fill the real window and blitted.
+    Mouse coordinates are automatically translated back to canvas space.
+    """
+
+    def __init__(self):
+        self.fullscreen = False
+        self.window     = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+        pygame.display.set_caption('Whack-a-Mole  |  F11 / Alt+Enter = Fullscreen')
+        self.canvas     = pygame.Surface((WIDTH, HEIGHT))
+        self._update_scale()
+
+    def toggle_fullscreen(self):
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            self.window = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.window = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+        self._update_scale()
+
+    def _update_scale(self):
+        ww, wh = self.window.get_size()
+        # letterbox: keep aspect ratio
+        scale = min(ww / WIDTH, wh / HEIGHT)
+        self.scaled_w = int(WIDTH  * scale)
+        self.scaled_h = int(HEIGHT * scale)
+        self.offset_x = (ww - self.scaled_w) // 2
+        self.offset_y = (wh - self.scaled_h) // 2
+        self.scale    = scale
+
+    def translate_mouse(self, pos):
+        """Convert real window mouse pos → canvas pos."""
+        mx = (pos[0] - self.offset_x) / self.scale
+        my = (pos[1] - self.offset_y) / self.scale
+        return (int(mx), int(my))
+
+    def flip(self):
+        ww, wh = self.window.get_size()
+        self._update_scale()
+        scaled = pygame.transform.scale(self.canvas, (self.scaled_w, self.scaled_h))
+        self.window.fill(BLACK)
+        self.window.blit(scaled, (self.offset_x, self.offset_y))
+        pygame.display.flip()
+
+    def handle_event(self, event):
+        """Return True if the event was consumed (fullscreen toggle)."""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_F11:
+                self.toggle_fullscreen()
+                return True
+            if event.key == pygame.K_RETURN and (event.mod & pygame.KMOD_ALT):
+                self.toggle_fullscreen()
+                return True
+        if event.type == pygame.VIDEORESIZE:
+            if not self.fullscreen:
+                self.window = pygame.display.set_mode(event.size, pygame.RESIZABLE)
+            self._update_scale()
+            return True
+        return False
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def lerp(a, b, t):
@@ -57,7 +123,6 @@ def ease_in(t):
 # ── Simple synthesised sounds ──────────────────────────────────────────────────
 
 def _make_tone(freq, duration, volume=0.4):
-    """Return a pygame.mixer.Sound made from a pure sine wave."""
     sample_rate = 44100
     n = int(sample_rate * duration)
     import array as _array
@@ -228,10 +293,11 @@ def draw_background(surf):
                              (bx + random.randint(-3, 3), gy - random.randint(8, 18)), 2)
 
 
-def draw_button(surf, text, cx, cy, w, h, color, hover_color, font):
-    mx, my = pygame.mouse.get_pos()
-    rect   = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
-    col    = hover_color if rect.collidepoint(mx, my) else color
+def draw_button(surf, text, cx, cy, w, h, color, hover_color, font, mouse_pos=None):
+    if mouse_pos is None:
+        mouse_pos = pygame.mouse.get_pos()
+    rect = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
+    col  = hover_color if rect.collidepoint(mouse_pos) else color
     pygame.draw.rect(surf, col, rect, border_radius=12)
     pygame.draw.rect(surf, WHITE, rect, 2, border_radius=12)
     t = font.render(text, True, WHITE)
@@ -242,6 +308,7 @@ def draw_button(surf, text, cx, cy, w, h, color, hover_color, font):
 def draw_hud(surf, score, time_left, combo, high_score):
     font_big = pygame.font.SysFont('Arial', 36, bold=True)
     font_med = pygame.font.SysFont('Arial', 24, bold=True)
+    font_sm  = pygame.font.SysFont('Arial', 16)
 
     bar = pygame.Surface((WIDTH, 60), pygame.SRCALPHA)
     bar.fill((0, 0, 0, 160))
@@ -255,6 +322,10 @@ def draw_hud(surf, score, time_left, combo, high_score):
 
     t = font_med.render(f'Best: {high_score}', True, (180, 180, 255))
     surf.blit(t, (WIDTH - t.get_width() - 20, 18))
+
+    # fullscreen hint (bottom-right corner)
+    hint = font_sm.render('F11 = Fullscreen', True, (150, 150, 150))
+    surf.blit(hint, (WIDTH - hint.get_width() - 8, HEIGHT - hint.get_height() - 6))
 
     if combo >= 2:
         t = font_med.render(f'x{combo} COMBO!', True, ORANGE)
@@ -289,37 +360,42 @@ class FloatText:
 
 # ── Screens ────────────────────────────────────────────────────────────────────
 
-def draw_menu_screen(surf, high_score):
+def draw_menu_screen(surf, high_score, mouse_pos):
     draw_background(surf)
     font_title = pygame.font.SysFont('Impact', 80)
     font_sub   = pygame.font.SysFont('Arial', 30, bold=True)
     font_sm    = pygame.font.SysFont('Arial', 22)
+    font_hint  = pygame.font.SysFont('Arial', 16)
 
     shadow = font_title.render('WHACK-A-MOLE', True, BLACK)
     surf.blit(shadow, (WIDTH // 2 - shadow.get_width() // 2 + 4, 104))
     title = font_title.render('WHACK-A-MOLE', True, GOLD)
     surf.blit(title, (WIDTH // 2 - title.get_width() // 2, 100))
 
-    # decorative mole
     dummy = Mole(WIDTH // 2, HEIGHT // 2 + 30)
     dummy.state = 'up'
     draw_dirt_mound(surf, WIDTH // 2, HEIGHT // 2 + 30)
     draw_hole(surf, WIDTH // 2, HEIGHT // 2 + 30)
     dummy.draw(surf)
 
-    btn_play = draw_button(surf, 'PLAY', WIDTH // 2, HEIGHT - 180, 200, 55,
-                           GREEN, (30, 160, 30), font_sub)
-    btn_quit = draw_button(surf, 'QUIT', WIDTH // 2, HEIGHT - 110, 200, 55,
-                           RED, (160, 30, 30), font_sub)
+    btn_play = draw_button(surf, 'PLAY', WIDTH // 2, HEIGHT - 210, 200, 55,
+                           GREEN, (30, 160, 30), font_sub, mouse_pos)
+    btn_fs   = draw_button(surf, 'FULLSCREEN  [F11]', WIDTH // 2, HEIGHT - 145, 260, 50,
+                           BLUE, (30, 80, 180), font_sm, mouse_pos)
+    btn_quit = draw_button(surf, 'QUIT', WIDTH // 2, HEIGHT - 85, 200, 55,
+                           RED, (160, 30, 30), font_sub, mouse_pos)
 
     if high_score > 0:
         hs = font_sm.render(f'High Score: {high_score}', True, GOLD)
-        surf.blit(hs, (WIDTH // 2 - hs.get_width() // 2, HEIGHT - 60))
+        surf.blit(hs, (WIDTH // 2 - hs.get_width() // 2, HEIGHT - 40))
 
-    return btn_play, btn_quit
+    hint = font_hint.render('Alt+Enter also toggles fullscreen', True, (130, 130, 130))
+    surf.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT - 18))
+
+    return btn_play, btn_fs, btn_quit
 
 
-def draw_gameover_screen(surf, score, high_score):
+def draw_gameover_screen(surf, score, high_score, mouse_pos):
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 180))
     surf.blit(overlay, (0, 0))
@@ -342,11 +418,11 @@ def draw_gameover_screen(surf, score, high_score):
     surf.blit(t, (WIDTH // 2 - t.get_width() // 2, 370))
 
     btn_play = draw_button(surf, 'PLAY AGAIN', WIDTH // 2, 460, 240, 55,
-                           GREEN, (30, 160, 30), font_sub)
+                           GREEN, (30, 160, 30), font_sub, mouse_pos)
     btn_menu = draw_button(surf, 'MENU', WIDTH // 2, 530, 240, 55,
-                           BLUE, (30, 80, 180), font_sub)
+                           BLUE, (30, 80, 180), font_sub, mouse_pos)
     btn_quit = draw_button(surf, 'QUIT', WIDTH // 2, 600, 240, 55,
-                           RED, (160, 30, 30), font_sub)
+                           RED, (160, 30, 30), font_sub, mouse_pos)
     return btn_play, btn_menu, btn_quit
 
 
@@ -361,9 +437,10 @@ def build_positions():
             for r in range(ROWS) for c in range(COLS)]
 
 
-def run_game(screen, clock, high_score):
+def run_game(display, clock, high_score):
     positions = build_positions()
     moles     = [Mole(cx, cy) for cx, cy in positions]
+    surf      = display.canvas
 
     bg_surf = pygame.Surface((WIDTH, HEIGHT))
     draw_background(bg_surf)
@@ -376,22 +453,27 @@ def run_game(screen, clock, high_score):
     game_over = False
 
     while True:
-        dt = min(clock.tick(FPS) / 1000.0, 0.05)
+        dt        = min(clock.tick(FPS) / 1000.0, 0.05)
+        mouse_pos = display.translate_mouse(pygame.mouse.get_pos())
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return 'quit', score
+            if display.handle_event(event):
+                continue
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 return 'menu', score
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                canvas_pos = display.translate_mouse(event.pos)
                 if game_over:
-                    btn_play, btn_menu, btn_quit = draw_gameover_screen(screen, score, high_score)
-                    if btn_play.collidepoint(event.pos): return 'play', score
-                    if btn_menu.collidepoint(event.pos): return 'menu', score
-                    if btn_quit.collidepoint(event.pos): return 'quit', score
+                    btn_play, btn_menu, btn_quit = draw_gameover_screen(
+                        surf, score, high_score, mouse_pos)
+                    if btn_play.collidepoint(canvas_pos): return 'play', score
+                    if btn_menu.collidepoint(canvas_pos): return 'menu', score
+                    if btn_quit.collidepoint(canvas_pos): return 'quit', score
                 else:
-                    mx, my = event.pos
+                    mx, my = canvas_pos
                     hit = False
                     for mole in moles:
                         if mole.try_whack(mx, my):
@@ -414,8 +496,8 @@ def run_game(screen, clock, high_score):
                 game_over  = True
                 high_score = max(high_score, score)
 
-            elapsed   = GAME_DURATION - time_left
-            speed_mul = 1.0 + elapsed / 60.0
+            elapsed    = GAME_DURATION - time_left
+            speed_mul  = 1.0 + elapsed / 60.0
             active_max = min(2 + int(elapsed / 20), 5)
 
             for mole in moles:
@@ -435,29 +517,28 @@ def run_game(screen, clock, high_score):
                 ft.update(dt)
             floats = [ft for ft in floats if ft.alive]
 
-        # ── Render ──
-        screen.blit(bg_surf, (0, 0))
+        # ── Render to canvas ──
+        surf.blit(bg_surf, (0, 0))
         for cx, cy in positions:
-            draw_dirt_mound(screen, cx, cy)
+            draw_dirt_mound(surf, cx, cy)
         for cx, cy in positions:
-            draw_hole(screen, cx, cy)
+            draw_hole(surf, cx, cy)
         for mole in moles:
-            mole.draw(screen)
-        draw_hud(screen, score, time_left, combo, high_score)
+            mole.draw(surf)
+        draw_hud(surf, score, time_left, combo, high_score)
         for ft in floats:
-            ft.draw(screen)
+            ft.draw(surf)
 
         if game_over:
-            draw_gameover_screen(screen, score, high_score)
+            draw_gameover_screen(surf, score, high_score, mouse_pos)
 
-        pygame.display.flip()
+        display.flip()
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
-    screen     = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption('Whack-a-Mole')
+    display    = Display()
     clock      = pygame.time.Clock()
     high_score = 0
     state      = 'menu'
@@ -465,21 +546,28 @@ def main():
     while True:
         if state == 'menu':
             clock.tick(FPS)
-            screen.fill(BLACK)
-            btn_play, btn_quit = draw_menu_screen(screen, high_score)
-            pygame.display.flip()
+            mouse_pos = display.translate_mouse(pygame.mouse.get_pos())
+            surf      = display.canvas
+            surf.fill(BLACK)
+            btn_play, btn_fs, btn_quit = draw_menu_screen(surf, high_score, mouse_pos)
+            display.flip()
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit(); sys.exit()
+                if display.handle_event(event):
+                    continue
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if btn_play.collidepoint(event.pos):
+                    canvas_pos = display.translate_mouse(event.pos)
+                    if btn_play.collidepoint(canvas_pos):
                         state = 'play'
-                    if btn_quit.collidepoint(event.pos):
+                    if btn_fs.collidepoint(canvas_pos):
+                        display.toggle_fullscreen()
+                    if btn_quit.collidepoint(canvas_pos):
                         pygame.quit(); sys.exit()
 
         elif state == 'play':
-            result, last_score = run_game(screen, clock, high_score)
+            result, last_score = run_game(display, clock, high_score)
             high_score = max(high_score, last_score)
             state = result
             if state == 'quit':
